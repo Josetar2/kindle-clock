@@ -245,6 +245,14 @@ draw_static() {
   commit_full
 }
 
+# 唤醒整屏重绘(加原子锁去重): outOfScreenSaver(lipc) 与 电源键(event0) 会同时触发,
+# 若两个 draw_static 并发跑 FBInk 会竞争把下半刷黑; 用 mkdir 锁保证同一时刻只有一个在画。
+redraw() {
+  mkdir /tmp/clock_rdlock 2>/dev/null || return 0
+  draw_static
+  rmdir /tmp/clock_rdlock 2>/dev/null
+}
+
 # ---- 主流程 ----
 CLEANED=0
 cleanup() {
@@ -317,7 +325,10 @@ RD=/tmp/clock_redraw
 PAUSE=/tmp/clock_pause
 rm -f $RD $PAUSE
 
-# 事件监听: 息屏 -> 暂停刷新; 唤醒 -> 恢复 (不再整屏重绘, 防闪烁)
+# 事件监听: 息屏 -> 暂停刷新; 唤醒 -> 必须整屏重绘
+# 关键: powerd 屏保会覆盖下半屏, 主循环恢复后每秒只刷顶部时间区,
+# 不主动整屏重绘的话下半要等 30 分钟兜底才恢复 -> 看起来"只剩上面的时间"。
+# 所以两个唤醒路径都立刻 draw_static 整屏盖回去 (先 sleep 1 让 powerd 画完屏保)。
 (
   while true; do
     lipc-wait-event com.lab126.powerd goingToScreenSaver >/dev/null 2>&1
@@ -329,6 +340,11 @@ WPID1=$!
   while true; do
     lipc-wait-event com.lab126.powerd outOfScreenSaver >/dev/null 2>&1
     rm -f $PAUSE 2>/dev/null
+    build_month
+    # 重绘风暴: powerd 唤醒时会异步把下半屏清黑, 单次重绘竞争不过,
+    # 连刷多次(每次间隔1s)确保盖过它的清屏, 最终整屏是时钟
+    i=0
+    while [ $i -lt 5 ]; do sleep 1; redraw; i=$((i+1)); done
   done
 ) &
 WPID2=$!
@@ -345,7 +361,8 @@ PWR=/dev/input/event0
     if [ "$typ" = "1" ] && [ "$code" = "116" ] && [ "$val" = "1" ]; then
       rm -f $PAUSE            # 若正处息屏/暂停, 顺带恢复刷新
       build_month
-      draw_static
+      i=0
+      while [ $i -lt 5 ]; do sleep 1; redraw; i=$((i+1)); done
     fi
   done
 ) &
