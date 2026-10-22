@@ -4,6 +4,8 @@
 
 不再当阅读器：开机即时钟，息屏保留画面，断网照常显示。
 
+![Kindle Paperwhite 4 座钟实拍](preview.png)
+
 ## 硬件与环境
 
 - 设备：Kindle Paperwhite 4，固件 5.18.1.1.1
@@ -49,28 +51,85 @@ tools/
   restart_verify.py  重启时钟并验证运行状态
 ```
 
-## 部署（到真机）
+## 从零部署教程
 
-前置：设备已 root、已开 USB 网络、已装 KOReader（提供 FBInk）。
+### 0. 前置准备（本项目不含，需你先完成）
+
+本脚本假设设备已经具备下面三件事，这部分的越狱步骤因固件版本而异，请按你的机型自行完成：
+
+1. **越狱 + 拿到 root shell**：参考 MobileRead 论坛对应固件版本的 Kindle 越狱帖。
+2. **开启 USB 网络（RNDIS）**：在 Kindle 上启用 USBnet，PC 端装好 RNDIS 驱动；插上 USB 后应能 `telnet 192.168.15.244 23` 进 root shell。
+3. **安装 KOReader**：本脚本直接复用 KOReader 自带的 `FBInk`（`/mnt/us/koreader/fbink`），免去自己交叉编译 framebuffer 工具。
+
+> 完成以上三步后，插 USB → 启用「USB 网络」，PC 端 `telnet 192.168.15.244 23` 能进 root 即表示环境就绪。
+
+### 1. 克隆仓库
 
 ```bash
-# 1. 推送脚本/字体/数据/自启 job 到设备
-python tools/deploy_clock2.py        # 推送 kindle_clock.sh + 字体 + 数据
-python tools/install_job.py           # 安装 /etc/init/kindle_clock.conf 并 reload
+git clone https://github.com/Josetar2/kindle-clock.git
+cd kindle-clock
+```
 
-# 2. 建立自启开关（U 盘里 /mnt/us/clock/ENABLED 存在 = 开机进时钟）
+### 2. 配置你的城市与亮度
+
+编辑 `kindle_clock.conf`（或设备端自建 `/mnt/us/clock/clock.conf`），设置：
+
+| 变量 | 含义 | 默认值 |
+|---|---|---|
+| `LAT` / `LON` | 经纬度，决定天气（Open-Meteo，无需 API key） | 台儿庄 |
+| `CITY` | 屏幕上显示的城市名 | `台儿庄` |
+| `BRIGHT` | 亮度档位 0–24 | `2` |
+
+经纬度可在 open-meteo.com 或任意地图工具查到。
+
+### 3. 推送到设备
+
+确保 USB 网络已连、telnet 可达，然后：
+
+```bash
+python tools/deploy_clock2.py    # 推 kindle_clock.sh + 字体 + 20 年农历数据(gzip)
+python tools/install_job.py      # 装自启 job 到 /etc/init 并 reload
+```
+
+- 大文件走 gzip，约 80s 推完，推完自动做 md5 校验。
+- 若你的 telnet 地址不是 `192.168.15.244`，改 `tools/*.py` 里的 `HOST` 即可。
+
+### 4. 开启开机自启开关
+
+在 Kindle 的 `/mnt/us/clock/` 下建一个**空文件** `ENABLED`（U 盘模式或 telnet 里 `touch` 均可）：
+
+```bash
+# 通过 telnet 进设备后执行：
 touch /mnt/us/clock/ENABLED
-
-# 3. 重启设备，应自动进入纯时钟界面
 ```
 
-可选本地调试（设备已 telnet 可达）：
+`ENABLED` 存在 = 开机进时钟；删掉它再重启 = 设备恢复正常 Kindle 界面。
+
+### 5. 重启，进入纯时钟
 
 ```bash
-python tools/kindle_telnet.py "date"          # 单条命令
-python tools/restart_verify.py                # 重启并验证
-python tools/cap_now.py && open clock_live.png # 抓屏
+# telnet 里重启（脚本已确保配置落盘）
+reboot
 ```
+
+重启后设备会自动：`stop framework` → 时钟接管屏幕 → 等 WiFi 对时 → 显示完整时钟界面（含开机弹窗二次覆盖，无需手动干预）。
+
+### 6. 日常使用
+
+- **电源键短按**：息屏（墨水屏保留最后一帧，几乎不耗电）/ 再按唤醒，并整屏重绘清残影。
+- **改配置**：改 `clock.conf` 后跑 `python tools/restart_verify.py` 重启时钟生效。
+- **关掉自启**：删 `/mnt/us/clock/ENABLED` 再重启，回到原生系统。
+- **PC 端抓屏验证**：`python tools/cap_now.py && open clock_live.png`。
+
+### 7. 故障排查
+
+| 现象 | 处理 |
+|---|---|
+| 开机不进时钟 | 确认 `ENABLED` 存在；`initctl status kindle_clock`；看 `/tmp/clock_run.log` |
+| 屏幕白 / 有残留弹窗 | 短按电源键整屏重绘，或 `python tools/restart_verify.py` |
+| 天气一直旧值 / 不更新 | 查 WiFi；`curl` 能否访问 open-meteo；断网本就保留上一次成功值 |
+| 农历 / 宜忌 2046 年起空白 | 改 `tools/gen_calendar.py` 的 `END` 重跑并重新部署 |
+| telnet 连不上 | 确认 USB 网络已启用、IP 为 192.168.15.244 |
 
 ## 重新生成数据 / 字体
 
