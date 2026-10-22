@@ -1,0 +1,10 @@
+# 调试/运行产物
+*.log
+*.png
+__pycache__/
+*.pyc
+
+# 设备端临时文件
+/tmp/
+clock_run.log
+clock_live.png
