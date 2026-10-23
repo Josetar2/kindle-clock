@@ -405,8 +405,18 @@ WPID4=$!
 full=0; last_wx=""; last_wxfull=""
 while true; do
   sleep 1
-  # 息屏中: 完全不刷 (e-ink 画面保留), 唤醒后下一秒自动恢复
-  [ -f $PAUSE ] && continue
+  # 息屏中: 暂停刷新 (e-ink 画面保留)。
+  # 但座钟永远应该显示时钟 —— PAUSE 超过 5 分钟视为假屏保事件(powerd 偶发误报,
+  # 会把时钟永久冻结), 强制清除并整屏恢复。真屏保下这也会把时钟盖回屏幕。
+  if [ -f $PAUSE ]; then
+    if [ -n "$(find /tmp/clock_pause -mmin +5 2>/dev/null)" ]; then
+      rm -f $PAUSE
+      build_month
+      redraw
+    else
+      continue
+    fi
+  fi
   full=$((full+1))
   # 每 10 分钟确认一次最低频(防 powerd/充电时把 governor 改回 performance)
   [ $((full % 600)) -eq 0 ] && set_cpufreq
