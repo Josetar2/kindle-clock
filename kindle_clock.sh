@@ -46,6 +46,12 @@ set_brightness() { # 固定亮度: 座钟常亮, 启动时与每次整刷时兜�
   lipc-set-prop com.lab126.powerd flIntensity "$BRIGHT" 2>/dev/null
 }
 
+set_cpufreq() { # 座钟不需要高频: 锁最低频(396MHz)大幅降持续功耗/发热
+  #  Kindle 默认 performance(996MHz); powersave 即最低频。sysfs 不落盘, 重启失效需重设。
+  f=/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+  printf 'powersave' > "$f" 2>/dev/null
+}
+
 sync_time() { # 联网校时(防 RTC 长期走偏), 成功返回 0; 无网/无工具直接失败
   [ -x /usr/bin/ntpdate ] || return 1
   WIP=$(ifconfig wlan0 2>/dev/null | sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p')
@@ -179,10 +185,10 @@ draw_yj() { # $1=label $2=text $3=top $4=最多行数; YJNEXT=下一可用top
 # px=180 -> advance 954px, 墨迹 917px -> 左右边距各 59 即精确居中
 T_PX=180
 T_MARGIN=59
-draw_time_box() { # $1=波形(默认GC16)  每秒 DU 快刷, 每分钟 GC16 清残影
-  # DSEG7 px180 实测宽 937 (-E), (1072-937)/2=67 -> 固定边距精确居中
+draw_time_box() { # $1=波形(默认GC16) $2=时间串(可选, 不传则现取)
   block 0 0 1072 350 WHITE
-  T=$(date +%H:%M:%S)
+  T=$2
+  [ -z "$T" ] && T=$(date +%H:%M:%S)
   $FB -O -b -q -t regular=$FONT7,px=180,left=67,right=67,top=85 "$T"
   commit_region 0 0 1072 350 "$1"
 }
@@ -310,6 +316,7 @@ if [ "$TEST" != "1" ]; then
   stop framework 2>/dev/null
   lipc-set-prop com.lab126.powerd preventAutoSleep 1 2>/dev/null
   set_brightness
+  set_cpufreq       # 座钟锁最低频(396MHz), 大幅降持续功耗/发热
   # 等待 WiFi 拿到 IP (重启后 wifid 需要几秒), 最多 20s
   i=0
   while [ $i -lt 20 ]; do
@@ -395,15 +402,17 @@ WPID3=$!
 ) &
 WPID4=$!
 
-full=0; last_wx=""
+full=0; last_wx=""; last_wxfull=""
 while true; do
   sleep 1
   # 息屏中: 完全不刷 (e-ink 画面保留), 唤醒后下一秒自动恢复
   [ -f $PAUSE ] && continue
   full=$((full+1))
-  now_day=$(date +%Y-%m-%d)
-  now_min=$(date +%M)
-  now_h=$(date +%H)
+  # 每 10 分钟确认一次最低频(防 powerd/充电时把 governor 改回 performance)
+  [ $((full % 600)) -eq 0 ] && set_cpufreq
+  # 一次取齐日期时间, 减少每秒 fork 次数
+  set -- $(date '+%Y %m %d %H %M %S')
+  now_day="$1-$2-$3"; now_h=$4; now_min=$5; now_sec=$6
   if [ "$now_day" != "$last_day" ]; then
     build_month
     draw_static
@@ -421,22 +430,30 @@ while true; do
       continue
     fi
   fi
-  # 时间: 每秒 DU 快刷; 换分钟时 GC16 清一次残影
+  # 时间: 每秒 DU 快刷(复用本次 date); 换分钟时 GC16 清一次残影
+  T="$now_h:$now_min:$now_sec"
   if [ "$now_min" != "$last_min" ]; then
-    draw_time_box GC16
+    draw_time_box GC16 "$T"
     last_min=$now_min
   else
-    draw_time_box DU
+    draw_time_box DU "$T"
   fi
-  # 天气/电量: 每 10 分钟
+  # 天气/电量: 每 10 分钟检查; 仅在内容有变化时才重绘(避免无谓的 GC16 整区刷)
   nmn=$(norm "$now_min")
   if [ $((nmn % 10)) -eq 0 ] && [ "$now_min" != "$last_wx" ]; then
-    draw_top_info
-    commit_region 350 0 1072 320
+    read_wx
+    b=$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null)
+    cur="$WX_TEMP$WX_DESC$WX_FC$b"
+    if [ "$cur" != "$last_wxfull" ]; then
+      draw_top_info
+      commit_region 350 0 1072 320
+      last_wxfull="$cur"
+    fi
     last_wx=$now_min
   fi
-  # 兜底: 每 30 分钟整刷一次, 防任何意外盖屏
-  if [ $full -ge 1800 ]; then
+  # 兜底: 每 1 小时整刷一次 GC16 清累积残影(屏保残留由唤醒风暴处理, 平时无需常刷)
+  if [ $full -ge 3600 ]; then
+    set_cpufreq
     draw_static
     full=0
   fi
