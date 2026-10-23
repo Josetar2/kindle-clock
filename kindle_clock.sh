@@ -14,7 +14,7 @@ DATA=/mnt/us/clock/calendar_data.txt
 LAT=34.55528
 LON=117.73917
 CITY="台儿庄"
-BRIGHT=2        # 常亮亮度档位 0-24; 置空则不干预亮度
+BRIGHT=0        # 常亮亮度档位 0-24; 置空则不干预亮度
 [ -f /mnt/us/clock/clock.conf ] && . /mnt/us/clock/clock.conf
 
 # ---- 工具函数 ----
@@ -158,6 +158,22 @@ commit_region() { # top left w h [waveform]
 
 clear_screen() { $FB -c -B WHITE -W GC16 -D ORDERED; }
 
+# ---- 宜/忌折行绘制 ----
+yj_wrap() { # $1=text -> 词组折行(每行<=102字节), 一行一条输出
+  echo "$1" | tr ' ' '\n' | awk '{ l=length($0); if(c=="") c=$0; else if(length(c)+1+l<=102) c=c" "$0; else {print c; c=$0} } END{ if(c!="") print c }'
+}
+draw_yj() { # $1=label $2=text $3=top $4=最多行数; YJNEXT=下一可用top
+  y=$3; n=0
+  yj_wrap "$2" | head -$4 > /tmp/yj_w
+  while IFS= read -r ln; do
+    n=$((n+1))
+    if [ "$n" = "1" ]; then draw_left 26 30 $y "$1  $ln"
+    else draw_left 26 112 $y "$ln"; fi
+    y=$((y+34))
+  done < /tmp/yj_w
+  YJNEXT=$y
+}
+
 # ---- 绘制各部分 ----
 # DSEG7: "HH:MM:SS" = 6*0.816em + 2*0.200em = 5.296em
 # px=180 -> advance 954px, 墨迹 917px -> 左右边距各 59 即精确居中
@@ -233,8 +249,9 @@ draw_calendar() {
   done
   fdate=$(printf "%s-%s-%02d" "$Y" "$M" "$D")
   YI=$(getf "$fdate" 5); JI=$(getf "$fdate" 6)
-  draw_left 32 30 1282 "宜  $YI"
-  draw_left 32 30 1352 "忌  $JI"
+  # 宜/忌按词组手动折行: FBInk 自动换行行距不可控, 会与下一行叠印
+  draw_yj 宜 "$YI" 1278 3
+  draw_yj 忌 "$JI" $((YJNEXT + 6)) 2
 }
 
 draw_static() {
